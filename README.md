@@ -23,8 +23,11 @@
 2. 點選 "Generate auth key"
 3. 建議選項：
    - ✅ Reusable（可重複使用）
-   - ✅ Ephemeral（臨時裝置，容器刪除後自動從網路移除）
+   - ✅ Tags: ssh-gateway（選擇此標籤，用於 ACL 控制）
+   - ⚠️  **不要選擇 Ephemeral**（使用標籤時不能是臨時金鑰）
 4. 複製生成的 auth key
+
+**注意**：如果你不需要使用 ACL 限制出站訪問，可以移除 `docker-compose.yml` 中的 `--advertise-tags=tag:ssh-gateway` 參數，這樣就可以使用 Ephemeral key。
 
 ### 2. 配置環境變數
 
@@ -89,7 +92,7 @@ environment:
   - TS_STATE_DIR=/var/lib/tailscale  # 狀態儲存目錄
   - TS_USERSPACE=false            # 使用核心網路棧
   - TS_ACCEPT_DNS=false           # 不接受 Tailscale DNS
-  - TS_EXTRA_ARGS=--ssh           # 啟用 Tailscale SSH
+  - TS_EXTRA_ARGS=--ssh --advertise-tags=tag:ssh-gateway  # 啟用 SSH 並設定標籤
 
 volumes:
   - ./tailscale-data:/var/lib/tailscale  # 持久化儲存
@@ -165,32 +168,96 @@ sudo systemctl start sshd
 
 ## 安全建議
 
-1. **使用 Ephemeral Keys**：容器刪除後自動從 Tailscale 網路移除
-2. **配置 ACL**：在 Tailscale Admin Console 中配置訪問控制列表
+1. **限制出站訪問**：使用標籤和 ACL 配置，確保 SSH gateway 只能被訪問，不能主動訪問其他裝置（參見「進階配置」章節）
+2. **配置嚴格的 ACL**：在 Tailscale Admin Console 中配置訪問控制列表，只允許特定使用者訪問
 3. **定期更新**：保持 Tailscale 容器映象更新
 4. **最小許可權原則**：只授予必要的 SSH 訪問許可權
 5. **監控日誌**：定期檢查 SSH 和 Tailscale 日誌
+6. **定期審核裝置**：在 Tailscale Admin Console 中定期檢查連線的裝置
 
 ## 進階配置
 
-### 使用 Tailscale ACL 控制訪問
+### 限制 SSH Gateway 的出站訪問（只允許被訪問）
 
-在 [Tailscale ACL 頁面](https://login.tailscale.com/admin/acls) 配置：
+為了安全性，你可能希望這個 SSH gateway 只能被其他裝置訪問，但不能主動連線到其他 Tailscale 裝置。這可以透過 Tailscale ACL 配置實現。
+
+配置已經在 `docker-compose.yml` 中添加了標籤 `tag:ssh-gateway`，現在需要在 [Tailscale ACL 頁面](https://login.tailscale.com/admin/acls) 配置相應的規則：
 
 ```json
 {
+  "tagOwners": {
+    "tag:ssh-gateway": ["autogroup:admin"]
+  },
   "acls": [
     {
       "action": "accept",
-      "src": ["user@example.com"],
-      "dst": ["ssh-gateway:22"]
+      "src": ["autogroup:member"],
+      "dst": ["tag:ssh-gateway:22"]
+    },
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": ["tag:ssh-gateway:*"]
+    }
+  ],
+  "ssh": [
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": ["tag:ssh-gateway"],
+      "users": ["autogroup:nonroot", "root"]
+    }
+  ]
+}
+```
+
+**重要說明**：
+- 上述 ACL 配置**只定義了其他裝置訪問 `tag:ssh-gateway` 的規則**
+- **沒有定義 `tag:ssh-gateway` 作為源（src）的規則**，因此它無法主動訪問其他裝置
+- `autogroup:member` 代表所有 Tailscale 網路中的成員
+- 如果你只想讓特定使用者訪問，可以將 `autogroup:member` 改為具體的郵箱地址
+
+**測試驗證**：
+
+從 SSH gateway 容器內部嘗試連線其他裝置應該會失敗：
+```bash
+# 進入容器
+docker exec -it tailscale-ssh-gateway sh
+
+# 嘗試 ping 其他 Tailscale 裝置（應該會被 ACL 阻止）
+ping 100.x.x.x
+
+# 嘗試 SSH 到其他裝置（應該會被 ACL 阻止）
+ssh 100.x.x.x
+```
+
+從其他 Tailscale 裝置訪問這個 gateway 應該會成功：
+```bash
+# 從其他裝置執行
+ssh ssh-gateway
+```
+
+### 使用 Tailscale ACL 控制特定使用者訪問
+
+如果你想更精細地控制哪些使用者可以訪問，可以使用以下配置：
+
+```json
+{
+  "tagOwners": {
+    "tag:ssh-gateway": ["autogroup:admin"]
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["user@example.com", "another-user@example.com"],
+      "dst": ["tag:ssh-gateway:22"]
     }
   ],
   "ssh": [
     {
       "action": "accept",
       "src": ["user@example.com"],
-      "dst": ["ssh-gateway"],
+      "dst": ["tag:ssh-gateway"],
       "users": ["your-username"]
     }
   ]

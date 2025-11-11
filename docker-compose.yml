@@ -10,7 +10,7 @@ services:
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_USERSPACE=false
       - TS_ACCEPT_DNS=false
-      - TS_EXTRA_ARGS=--ssh
+      - TS_EXTRA_ARGS=--ssh --advertise-tags=tag:ssh-gateway
     volumes:
       - ./tailscale-data:/var/lib/tailscale
       - /dev/net/tun:/dev/net/tun
